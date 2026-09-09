@@ -1,5 +1,4 @@
-function requireEnvironmentVariable(variableName: string): string {
-  const variableValue = process.env[variableName];
+function requireEnvironmentVariableValue(variableName: string, variableValue: string | undefined): string {
 
   if (!variableValue) {
     throw new Error(`Missing required environment variable: ${variableName}`);
@@ -10,10 +9,19 @@ function requireEnvironmentVariable(variableName: string): string {
 
 export const environment = {
   get supabaseUrl() {
-    return requireEnvironmentVariable("NEXT_PUBLIC_SUPABASE_URL");
+    // NEXT_PUBLIC_ variables must be referenced directly so Next.js can embed
+    // them in browser bundles. Dynamic process.env[variableName] access works
+    // on the server but is undefined in client components.
+    return requireEnvironmentVariableValue(
+      "NEXT_PUBLIC_SUPABASE_URL",
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+    );
   },
   get supabasePublishableKey() {
-    return requireEnvironmentVariable("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
+    return requireEnvironmentVariableValue(
+      "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    );
   },
   get supabaseStorageBucketName() {
     return process.env.SUPABASE_STORAGE_BUCKET ?? "music";

@@ -11,6 +11,7 @@ type UploadQueueItem = {
   artistName: string;
   durationSeconds: number | null;
   file: File;
+  errorMessage?: string;
   id: string;
   status: "ready" | "uploading" | "uploaded" | "failed" | "too-large";
   title: string;
@@ -195,9 +196,14 @@ export function UploadTrackForm() {
         setQueue((currentQueue) => currentQueue.map((item) => (
           item.id === queueItem.id ? { ...item, status: "uploaded" } : item
         )));
-      } catch {
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "上传时发生未知错误。";
+        console.error("[upload-queue] Failed to upload track", {
+          errorMessage,
+          fileName: queueItem.file.name,
+        });
         setQueue((currentQueue) => currentQueue.map((item) => (
-          item.id === queueItem.id ? { ...item, status: "failed" } : item
+          item.id === queueItem.id ? { ...item, errorMessage, status: "failed" } : item
         )));
       }
     }
@@ -244,6 +250,7 @@ export function UploadTrackForm() {
                 {queueItem.status === "failed" && "失败，可重试"}
                 {queueItem.status === "too-large" && "超过 50 MB"}
               </span>
+              {queueItem.errorMessage && <p className="queue-error" role="alert">失败原因：{queueItem.errorMessage}</p>}
             </article>
           ))}
         </div>

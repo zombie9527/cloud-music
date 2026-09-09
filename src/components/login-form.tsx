@@ -23,6 +23,10 @@ export function LoginForm() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
+      console.error("[auth/login] Sign-in failed", {
+        errorCode: error.code,
+        errorMessage: error.message,
+      });
       setStatusMessage(error.message);
       setIsSubmitting(false);
       return;

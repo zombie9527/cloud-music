@@ -58,6 +58,14 @@ export async function POST(request: Request) {
     .createSignedUploadUrl(objectKey);
 
   if (signedUploadError || !signedUploadData?.token) {
+    console.error("[media/upload-url] Failed to create a signed upload URL", {
+      bucketName: environment.supabaseStorageBucketName,
+      errorCode: signedUploadError?.name,
+      errorMessage: signedUploadError?.message,
+      objectKey,
+      userId: userData.user.id,
+    });
+
     return NextResponse.json(
       { error: signedUploadError?.message ?? "Unable to create a Supabase Storage upload URL." },
       { status: 500 },
