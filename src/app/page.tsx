@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { MusicPlayer } from "@/components/music-player";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { Track } from "@/lib/types";
+import type { LibraryPlaylist, Track } from "@/lib/types";
 
 function mapTrack(track: {
   album_title: string | null;
@@ -28,7 +28,7 @@ export default async function Home() {
   const { data: userData } = await supabase.auth.getUser();
   const userId = userData.user?.id;
 
-  const [{ data: tracksData }, { data: dislikedTracksData }, { data: profileData }] = await Promise.all([
+  const [{ data: tracksData }, { data: dislikedTracksData }, { data: playlistsData }, { data: playlistTracksData }, { data: profileData }] = await Promise.all([
     userId
       ? supabase
         .from("tracks")
@@ -39,6 +39,12 @@ export default async function Home() {
       ? supabase.from("disliked_tracks").select("track_id").eq("user_id", userId)
       : Promise.resolve({ data: [] }),
     userId
+      ? supabase.from("playlists").select("id, name").eq("owner_id", userId).order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] }),
+    userId
+      ? supabase.from("playlist_tracks").select("playlist_id, track_id, position").order("position", { ascending: true })
+      : Promise.resolve({ data: [] }),
+    userId
       ? supabase.from("profiles").select("is_admin").eq("id", userId).single()
       : Promise.resolve({ data: null }),
   ]);
@@ -47,6 +53,30 @@ export default async function Home() {
   const tracks = (tracksData ?? [])
     .filter((track) => !dislikedTrackIds.has(track.id))
     .map(mapTrack);
+  const tracksById = new Map(tracks.map((track) => [track.id, track]));
+  const playlistTracksByPlaylistId = new Map<string, Track[]>();
+
+  for (const playlistTrack of playlistTracksData ?? []) {
+    const track = tracksById.get(playlistTrack.track_id);
+    if (!track) {
+      continue;
+    }
+
+    const playlistTracks = playlistTracksByPlaylistId.get(playlistTrack.playlist_id) ?? [];
+    playlistTracks.push(track);
+    playlistTracksByPlaylistId.set(playlistTrack.playlist_id, playlistTracks);
+  }
+
+  const assignedTrackIds = new Set((playlistTracksData ?? []).map((playlistTrack) => playlistTrack.track_id));
+  const playlists: LibraryPlaylist[] = (playlistsData ?? []).map((playlist) => ({
+    id: playlist.id,
+    name: playlist.name,
+    tracks: playlistTracksByPlaylistId.get(playlist.id) ?? [],
+  }));
+  const unassignedTracks = tracks.filter((track) => !assignedTrackIds.has(track.id));
+  if (unassignedTracks.length > 0) {
+    playlists.push({ id: null, name: "未分类", tracks: unassignedTracks });
+  }
 
   return (
     <main className="app-shell player-shell">
@@ -63,7 +93,7 @@ export default async function Home() {
           <span className="status-badge">{tracks.length} 首</span>
         </div>
         {userId ? (
-          <MusicPlayer canManageTracks={profileData?.is_admin ?? false} tracks={tracks} />
+          <MusicPlayer canManageTracks={profileData?.is_admin ?? false} playlists={playlists} />
         ) : (
           <p className="empty-state-note">登录后即可查看并播放你的私人曲库。</p>
         )}

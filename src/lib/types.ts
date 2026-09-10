@@ -8,8 +8,8 @@ export type Track = {
   audioObjectKey: string;
 };
 
-export type LibrarySection = {
-  title: string;
-  description: string;
+export type LibraryPlaylist = {
+  id: string | null;
+  name: string;
   tracks: Track[];
 };

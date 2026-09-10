@@ -19,6 +19,7 @@ type UploadQueueItem = {
 
 type SignedUploadResponse = {
   bucketName?: string;
+  contentType?: string;
   error?: string;
   objectKey?: string;
   signedUploadToken?: string;
@@ -60,6 +61,7 @@ export function UploadTrackForm() {
   const folderInput = useRef<HTMLInputElement>(null);
   const [isPreparingQueue, setIsPreparingQueue] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [playlistName, setPlaylistName] = useState("");
   const [queue, setQueue] = useState<UploadQueueItem[]>([]);
   const [statusMessage, setStatusMessage] = useState("选择音乐文件或一个音乐文件夹。");
 
@@ -109,8 +111,10 @@ export function UploadTrackForm() {
     setStatusMessage(`正在读取 ${files.length} 个文件的音频信息...`);
 
     const queueItems = await Promise.all(files.map(createQueueItem));
+    const selectedFolderName = files[0]?.webkitRelativePath.split("/")[0];
     const filesOverFreePlanLimit = queueItems.filter((item) => item.status === "too-large").length;
     setQueue(queueItems);
+    setPlaylistName(selectedFolderName || "新播放列表");
     setStatusMessage(
       filesOverFreePlanLimit > 0
         ? `已识别 ${queueItems.length} 首；${filesOverFreePlanLimit} 首超过免费版 50 MB 单文件限制。`
@@ -125,7 +129,7 @@ export function UploadTrackForm() {
     )));
   }
 
-  async function uploadTrack(queueItem: UploadQueueItem) {
+  async function uploadTrack(queueItem: UploadQueueItem, playlistId: string, position: number) {
     const uploadLinkResponse = await fetch("/api/media/upload-url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -139,6 +143,7 @@ export function UploadTrackForm() {
     if (
       !uploadLinkResponse.ok
       || !uploadLinkData.bucketName
+      || !uploadLinkData.contentType
       || !uploadLinkData.objectKey
       || !uploadLinkData.signedUploadToken
     ) {
@@ -152,25 +157,88 @@ export function UploadTrackForm() {
         uploadLinkData.objectKey,
         uploadLinkData.signedUploadToken,
         queueItem.file,
-        { contentType: queueItem.file.type || "audio/mpeg" },
+        { contentType: uploadLinkData.contentType },
       );
 
     if (uploadError) {
       throw new Error(`文件上传至 Supabase Storage 失败：${uploadError.message}`);
     }
 
-    const { error: insertError } = await supabase.from("tracks").insert({
-      title: queueItem.title.trim() || getTitleFromFileName(queueItem.file.name),
-      artist_name: queueItem.artistName.trim() || "未知歌手",
-      album_title: queueItem.albumTitle.trim() || null,
-      duration_seconds: queueItem.durationSeconds,
-      audio_object_key: uploadLinkData.objectKey,
-      mime_type: queueItem.file.type || "audio/mpeg",
+    const { data: track, error: insertError } = await supabase
+      .from("tracks")
+      .insert({
+        title: queueItem.title.trim() || getTitleFromFileName(queueItem.file.name),
+        artist_name: queueItem.artistName.trim() || "未知歌手",
+        album_title: queueItem.albumTitle.trim() || null,
+        duration_seconds: queueItem.durationSeconds,
+        audio_object_key: uploadLinkData.objectKey,
+        mime_type: uploadLinkData.contentType,
+      })
+      .select("id")
+      .single();
+
+    if (insertError || !track) {
+      throw new Error(`音乐文件已上传，但保存资料失败：${insertError?.message ?? "未知错误"}`);
+    }
+
+    const { error: playlistTrackError } = await supabase.from("playlist_tracks").insert({
+      playlist_id: playlistId,
+      track_id: track.id,
+      position,
     });
 
-    if (insertError) {
-      throw new Error(`音乐文件已上传，但保存资料失败：${insertError.message}`);
+    if (playlistTrackError) {
+      throw new Error(`音乐文件已上传，但无法加入播放列表：${playlistTrackError.message}`);
     }
+  }
+
+  async function getOrCreatePlaylistId() {
+    const normalizedPlaylistName = playlistName.trim();
+    if (!normalizedPlaylistName) {
+      throw new Error("请填写播放列表名称。");
+    }
+
+    const supabase = createSupabaseBrowserClient();
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) {
+      throw new Error("请先登录后再上传音乐。");
+    }
+
+    const { data: existingPlaylist, error: existingPlaylistError } = await supabase
+      .from("playlists")
+      .select("id")
+      .eq("owner_id", userData.user.id)
+      .eq("name", normalizedPlaylistName)
+      .maybeSingle();
+
+    if (existingPlaylistError) {
+      throw new Error(`无法读取播放列表：${existingPlaylistError.message}`);
+    }
+
+    if (existingPlaylist) {
+      const { count, error: countError } = await supabase
+        .from("playlist_tracks")
+        .select("*", { count: "exact", head: true })
+        .eq("playlist_id", existingPlaylist.id);
+
+      if (countError) {
+        throw new Error(`无法读取播放列表歌曲数量：${countError.message}`);
+      }
+
+      return { playlistId: existingPlaylist.id, nextPosition: count ?? 0 };
+    }
+
+    const { data: playlist, error: playlistError } = await supabase
+      .from("playlists")
+      .insert({ name: normalizedPlaylistName, owner_id: userData.user.id })
+      .select("id")
+      .single();
+
+    if (playlistError || !playlist) {
+      throw new Error(`无法创建播放列表：${playlistError?.message ?? "未知错误"}`);
+    }
+
+    return { playlistId: playlist.id, nextPosition: 0 };
   }
 
   async function uploadQueue() {
@@ -184,14 +252,23 @@ export function UploadTrackForm() {
     setIsUploading(true);
     let uploadedCount = 0;
 
-    for (const queueItem of uploadableItems) {
+    let uploadPlaylist: { nextPosition: number; playlistId: string };
+    try {
+      uploadPlaylist = await getOrCreatePlaylistId();
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "无法创建播放列表。");
+      setIsUploading(false);
+      return;
+    }
+
+    for (const [queueIndex, queueItem] of uploadableItems.entries()) {
       setQueue((currentQueue) => currentQueue.map((item) => (
         item.id === queueItem.id ? { ...item, status: "uploading" } : item
       )));
       setStatusMessage(`正在上传 ${uploadedCount + 1} / ${uploadableItems.length}：${queueItem.title}`);
 
       try {
-        await uploadTrack(queueItem);
+        await uploadTrack(queueItem, uploadPlaylist.playlistId, uploadPlaylist.nextPosition + queueIndex);
         uploadedCount += 1;
         setQueue((currentQueue) => currentQueue.map((item) => (
           item.id === queueItem.id ? { ...item, status: "uploaded" } : item
@@ -232,6 +309,10 @@ export function UploadTrackForm() {
             <strong>上传队列</strong>
             <span>{queue.length} 首</span>
           </div>
+          <label className="playlist-name-field">
+            所属播放列表 / 文件夹
+            <input disabled={isUploading} onChange={(event) => setPlaylistName(event.target.value)} value={playlistName} />
+          </label>
           {queue.map((queueItem) => (
             <article className="queue-item" key={queueItem.id}>
               <div className="queue-file-summary">

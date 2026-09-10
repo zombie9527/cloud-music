@@ -14,11 +14,42 @@ const acceptedAudioTypes = new Set([
   "audio/webm",
 ]);
 
+const audioTypeAliases = new Map([
+  ["audio/x-m4a", "audio/m4a"],
+  ["audio/x-aac", "audio/aac"],
+  ["audio/x-wav", "audio/wav"],
+  ["audio/vnd.wav", "audio/wav"],
+]);
+
+function normalizeAudioType(contentType: string) {
+  return audioTypeAliases.get(contentType.toLowerCase()) ?? contentType.toLowerCase();
+}
+
+const audioTypesByExtension = new Map([
+  ["aac", "audio/aac"],
+  ["flac", "audio/flac"],
+  ["m4a", "audio/m4a"],
+  ["mp3", "audio/mpeg"],
+  ["mp4", "audio/mp4"],
+  ["ogg", "audio/ogg"],
+  ["wav", "audio/wav"],
+  ["webm", "audio/webm"],
+]);
+
 function getFileExtension(fileName: string) {
   const fileExtension = fileName.split(".").pop()?.toLowerCase();
   return fileExtension && /^[a-z0-9]{1,8}$/.test(fileExtension)
     ? fileExtension
     : "audio";
+}
+
+function getAudioType(contentType: string | undefined, fileName: string) {
+  const normalizedContentType = contentType && normalizeAudioType(contentType);
+  if (normalizedContentType && acceptedAudioTypes.has(normalizedContentType)) {
+    return normalizedContentType;
+  }
+
+  return audioTypesByExtension.get(getFileExtension(fileName));
 }
 
 export async function POST(request: Request) {
@@ -27,12 +58,17 @@ export async function POST(request: Request) {
     fileName?: string;
   };
 
-  if (!requestBody.contentType || !acceptedAudioTypes.has(requestBody.contentType)) {
-    return NextResponse.json({ error: "Unsupported audio type." }, { status: 400 });
-  }
-
   if (!requestBody.fileName) {
     return NextResponse.json({ error: "A file name is required." }, { status: 400 });
+  }
+
+  const contentType = getAudioType(requestBody.contentType, requestBody.fileName);
+  if (!contentType) {
+    console.warn("[media/upload-url] Unsupported audio type", {
+      contentType: requestBody.contentType,
+      fileName: requestBody.fileName,
+    });
+    return NextResponse.json({ error: "Unsupported audio type." }, { status: 400 });
   }
 
   const supabase = await createSupabaseServerClient();
@@ -74,6 +110,7 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     bucketName: environment.supabaseStorageBucketName,
+    contentType,
     objectKey: signedUploadData.path ?? objectKey,
     signedUploadToken: signedUploadData.token,
   });
